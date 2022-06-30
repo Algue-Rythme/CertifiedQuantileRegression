@@ -1,4 +1,10 @@
-"""Implement of Lipschitz neural network layer."""
+# This file is part of CNQR which is released under the Apache License 2.0.
+# See file LICENSE in the root directory or https://opensource.org/licenses/Apache-2.0 for full license details.
+
+"""Implement of Lipschitz neural network layer in Jax.
+
+Freely inspired by Deel.Lip package: https://github.com/deel-ai/deel-lip distributed under MIT licence.
+"""
 
 
 from typing import Any, Callable, Iterable, List
@@ -97,7 +103,7 @@ class SpectralDense(nn.Module):
     u_init: Callable = initializers.lecun_normal()
 
     @nn.compact
-    def __call__(self, inputs, training):
+    def __call__(self, inputs, train):
         """Forward pass.
         
         Args:
@@ -115,10 +121,12 @@ class SpectralDense(nn.Module):
         u = self.variable('lip', 'u', self.u_init, (kernel_shape[-1],))
         sigma = self.variable('lip', 'sigma', initializers.zeros, (1,))
         
-        if training:
-            ortho_ker, _u = kernel_orthogonalization(kernel, u.value, unroll=True, jit=True)
-            orthogonal_kernel.value = ortho_ker  # assigns the value
+        if train:
+            ortho_ker, _u, _sigma = kernel_orthogonalization(kernel, u.value, unroll=True, jit=True)
+            # cache the value for future use.
+            orthogonal_kernel.value = ortho_ker  
             u.value = _u
+            sigma.value = _sigma
         else:
             ortho_ker = orthogonal_kernel.value
 
