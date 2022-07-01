@@ -16,4 +16,4 @@ We propose a *parametric method* to estimate high dimensional confidence interva
 
 [1] del Barrio, E., Sanz, A.G. and Hallin, M., 2022.
 Nonparametric Multiple-Output Center-Outward Quantile Regression.
-arXiv preprint arXiv:2204.11756.
+arXiv preprint [arXiv:2204.11756](https://arxiv.org/abs/2204.11756)
