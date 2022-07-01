@@ -22,6 +22,7 @@ import cnqr.layers as layers
 import cnqr.tree_util as tree_util
 from cnqr._src.lipschitz import BjorckDense, power_iteration, spectral_normalization
 from cnqr._src.lipschitz import l2_normalize, bjorck_algorithm, kernel_orthogonalization
+from cnqr._src.lipschitz import groupsort2
 
 
 class BjorckDenseTest(jtu.JaxTestCase):
@@ -189,6 +190,16 @@ class BjorckDenseTest(jtu.JaxTestCase):
         self.assertLessEqual(L, 1. + atol)
 
         tree_util.tree_map(lambda a,b: self.assertAllClose(a, b, atol=atol, rtol=rtol), mutated_1['lip'], mutated_2['lip'])
+
+
+class ActivationsTest(jtu.JaxTestCase):
+
+    def test_groupsort2(self):
+        """Test GroupSort2."""
+        vec = jnp.array([[1, 4, 5, 8]+[2, 3, 6, 7]])
+        vec_group = groupsort2(vec)
+        answer = jnp.array([[1, 3, 5, 7] + [2, 4, 6, 8]])
+        onp.testing.assert_array_equal(vec_group, answer)
 
 
 if __name__ == '__main__':

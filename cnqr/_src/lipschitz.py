@@ -208,3 +208,31 @@ class BjorckDense(nn.Module):
         y = y + bias
 
         return y
+
+
+def channelwise_groupsort2(x):
+    """GroupSort2 activation function.
+
+    Args:
+        x: array of shape (C,). C must be an even number.
+
+    Returns:
+        array of shape (C,) with groupsort2 applied.
+    """
+    assert x.shape[0] % 2 == 0
+    a, b = jnp.split(x, 2, axis=0)
+    min_ab = jnp.minimum(a, b)
+    max_ab = jnp.maximum(a, b)
+    return jnp.concatenate([min_ab, max_ab], axis=0)
+
+
+def groupsort2(x):
+    """GroupSort2 activation function.
+
+    Args:
+        x: array of shape (B, C). C must be an even number.
+
+    Returns:
+        array of shape (B, C) with groupsort2 applied.
+    """
+    return jax.vmap(channelwise_groupsort2, in_axes=0)(x)
