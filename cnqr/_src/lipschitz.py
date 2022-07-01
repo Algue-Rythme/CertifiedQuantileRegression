@@ -17,7 +17,7 @@ import jax.nn.initializers as initializers
 import flax
 import flax.linen as nn
 
-from loop import while_loop
+from cnqr.loop import while_loop
 
 
 def l2_normalize(vec, epsilon=1e-5):
@@ -95,8 +95,8 @@ def kernel_orthogonalization(kernel, u,
     return orthogonal_kernel, u
 
 
-class SpectralDense(nn.Module):
-    """Spectral Dense layer."""
+class BjorckDense(nn.Module):
+    """Dense layer with orthogonality constraint enforced by Bjorck algorithm."""
     features: int
     kernel_init: Callable = initializers.lecun_normal()
     bias_init: Callable = initializers.zeros
