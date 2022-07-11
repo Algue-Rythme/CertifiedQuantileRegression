@@ -220,11 +220,10 @@ def channelwise_groupsort2(x):
         array of shape (C,) with groupsort2 applied.
     """
     assert x.shape[0] % 2 == 0
-    a, b = jnp.split(x, 2, axis=0)
-    min_ab = jnp.minimum(a, b)
-    max_ab = jnp.maximum(a, b)
-    return jnp.concatenate([min_ab, max_ab], axis=0)
-
+    fv = jnp.reshape(x, (-1, 2))
+    a, b = jnp.split(fv, 2, axis=1)
+    newv = jnp.concatenate([jnp.minimum(a, b), jnp.maximum(a, b)], axis=1)
+    return jnp.reshape(newv, x.shape)
 
 def groupsort2(x):
     """GroupSort2 activation function.
