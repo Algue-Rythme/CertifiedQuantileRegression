@@ -1,5 +1,5 @@
 # Borrowed from Jaxopt library (distributed under Apache License 2.0)
-# See: https://github.com/google/jaxopt/blob/main/jaxopt/_src/tree_util.py 
+# See: https://github.com/google/jaxopt/blob/main/jaxopt/_src/tree_util.py
 
 """Tree utilities."""
 
@@ -141,8 +141,8 @@ def tree_gram(a):
   Returns:
     arrays of shape (m,m) of all dot products
   """
-  vmap_left = jax.vmap(tree_vdot, in_axes=(0,None))
-  vmap_right = jax.vmap(vmap_left, in_axes=(None,0))
+  vmap_left = jax.vmap(tree_vdot, in_axes=(0, None))
+  vmap_right = jax.vmap(vmap_left, in_axes=(None, 0))
   return vmap_right(a, a)
 
 

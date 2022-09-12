@@ -1,5 +1,5 @@
 # Borrowed from Jaxopt library (distributed under Apache License 2.0)
-# See: https://github.com/google/cnqr/blob/main/jaxopt/tree_util.py 
+# See: https://github.com/google/cnqr/blob/main/jaxopt/tree_util.py
 
 """Tree utilities."""
 

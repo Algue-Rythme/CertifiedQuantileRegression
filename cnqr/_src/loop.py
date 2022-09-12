@@ -47,7 +47,7 @@ def _while_loop_lax(cond_fun, body_fun, init_val, maxiter):
   def _body_fun(_val):
     it, val = _val
     val = body_fun(val)
-    return it+1, val
+    return it + 1, val
 
   return jax.lax.while_loop(_cond_fun, _body_fun, (0, init_val))[1]
 
