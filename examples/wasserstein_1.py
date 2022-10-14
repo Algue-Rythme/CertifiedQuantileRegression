@@ -15,6 +15,7 @@ from absl import logging
 
 import jax
 import jax.numpy as jnp
+from jax.config import config
 
 from flax.training import train_state
 from flax import linen as nn
@@ -23,7 +24,8 @@ from matplotlib import axes
 import optax
 from sklearn.datasets import make_moons, make_circles
 
-from cnqr.layers import BjorckDense, groupsort2
+from cnqr import balanced_KR
+from cnqr.layers import StiefelDense, full_sort, groupsort2
 
 
 flags.DEFINE_float("learning_rate", 1e-3, "Learning rate.")
@@ -32,29 +34,38 @@ flags.DEFINE_integer("dataset_size", 5000, "Number of points in dataset.")
 flags.DEFINE_integer("num_epochs", 50, "Number of passes over the dataset.")
 flags.DEFINE_enum("dataset", "two_moons", ['two_moons', 'two_circles'], "Dataset to train on.")
 flags.DEFINE_integer("batch_size", 256, "Number of examples in batch.")
-flags.DEFINE_integer("maxiter_spectral", 3, "Number of iterations for spectral norm.")
-flags.DEFINE_integer("maxiter_bjorck", 15, "Number of iterations for Bjorck.")
 FLAGS = flags.FLAGS
 
 
 class LipschitzNN(nn.Module):
-  hidden_widths: Sequence[int] = (128, 64, 32)
+  hidden_widths: Sequence[int] = (64, 64, 64, 64)
 
   @nn.compact
   def __call__(self, inputs, train):
-    bjorck_dense = partial(
-      BjorckDense,
-      maxiter_spectral=FLAGS.maxiter_spectral,
-      maxiter_bjorck=FLAGS.maxiter_bjorck,
+    stiefel_dense = partial(
+      StiefelDense,
       train=train)
 
     x = inputs
     for width in self.hidden_widths:
-      x = bjorck_dense(features=width)(x)
-      x = groupsort2(x)
-    x = bjorck_dense(features=1)(x)
+      x = stiefel_dense(features=width)(x)
+      x = full_sort(x)
+    x = stiefel_dense(features=1)(x)
 
     return x
+
+
+def compatible_tabulate(model, keys, dummy_batch):
+  # TODO: remove this hack once Flax's API is mature and settle definetely for a recent version.
+  try:
+    infos = model.tabulate(keys, dummy_batch, train=True,
+                           exclude_methods=('_stiefel_projection',))
+  except AttributeError:
+    # `exclude_methods`` is not supported in newer versions of Flax (>0.6.0).
+    # But it is mandatory before when the layer has multiple methods.
+    infos = model.tabulate(keys, dummy_batch, train=True)
+  finally:
+    logging.info(infos)
 
 
 class LipschitzTrainState(train_state.TrainState):
@@ -67,7 +78,7 @@ def create_train_state(rng):
   keys = dict(zip(['params', 'lip'], jax.random.split(rng, 2)))
   dummy_batch = jnp.zeros([FLAGS.batch_size, 2])
   model_params = model.init(keys, dummy_batch, train=True)
-  logging.info(model.tabulate(keys, dummy_batch, train=True))
+  # compatible_tabulate(model, keys, dummy_batch)
   params, lip_state = model_params['params'], model_params['lip']
   tx = optax.adam(FLAGS.learning_rate)
   return LipschitzTrainState.create(
@@ -84,12 +95,7 @@ def apply_model(state, points, labels):
     model_params = {'params': params, 'lip': state.lip_state}
     score, variables = state.apply_fn(model_params, points, train=True, mutable='lip')
     score = score.flatten()  # size (B,)
-    is_P = (labels == 1).astype(jnp.float32)  # size (B,)
-    is_Q = (labels == -1).astype(jnp.float32)
-    eps = 1e-2
-    pred_P = score * is_P / (is_P.sum() + eps)  # averaging over the batch
-    pred_Q = score * is_Q / (is_Q.sum() + eps)
-    loss = -(jnp.sum(pred_P) - jnp.sum(pred_Q))  # maximize E_Pf - E_Qf
+    loss, (pred_P, pred_Q) = balanced_KR(labels, score, has_aux=True)
     return loss, (variables['lip'], pred_P, pred_Q)
 
   grad_fn = jax.value_and_grad(balanced_wasserstein, has_aux=True)
@@ -149,6 +155,7 @@ def compute_earth_mover_distance(points, labels, epsilon):
   from ott.geometry import pointcloud
   from ott.core import sinkhorn
   from ott.tools import transport
+  print("Compute EMD...")
   p, q = points[labels == 1], points[labels == -1]
   geom = pointcloud.PointCloud(p, q, epsilon=epsilon, power=1.0)
   out = sinkhorn.sinkhorn(geom)
@@ -159,6 +166,8 @@ def plot_data(points, labels, train_state):
   import matplotlib.pyplot as plt
   from matplotlib import cm
   import numpy as onp
+
+  print("Plot OT plan...")
 
   # forward in f
   shift = 0.5
@@ -178,7 +187,11 @@ def plot_data(points, labels, train_state):
   ax.scatter(points[labels == -1, 0], points[labels == -1, 1], alpha=0.1)
   cset = ax.contour(xx, yy, Y_pred, cmap='twilight', levels=20)
   ax.clabel(cset, inline=1, fontsize=10)
-  plt.savefig('sandbox/wasserstein_1.png')
+
+  file_loc = 'sandbox/wasserstein_1.png'
+  plt.savefig(file_loc)
+  print(f"OT plan saved at {file_loc}.")
+
 
 
 def main(argv):
@@ -205,4 +218,5 @@ def main(argv):
   plot_data(train_ds['points'], train_ds['labels'], state)
 
 if __name__ == '__main__':
+  # jax.config.update("jax_enable_x64", True)
   app.run(main)
