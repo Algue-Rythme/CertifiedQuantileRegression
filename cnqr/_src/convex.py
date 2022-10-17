@@ -37,7 +37,7 @@ class DenseWrapper(nn.Module):
   def _identity_initializer(key: KeyArray,
                             shape: Shape,
                             dtype: DTypeLikeInexact = jnp.float_) -> Array:
-    return jnp.eye(N=shape[-2], M=shape[-1], dtype=dtype).reshape(shape)
+    return jnp.eye(N=shape[-2], M=shape[-1]).reshape(shape)
 
   @nn.compact
   def __call__(self, x, **kwargs):
@@ -61,6 +61,86 @@ class DenseWrapper(nn.Module):
     return f(x)
 
 
+class ICNN(nn.Module):
+  """Input convex neural network (PICNN) architecture with initialization.
+  Implementation of partially input convex neural networks as introduced in
+  Amos+(2017) with initialization schemes proposed by Bunne+(2022).
+
+  Args:
+    * dim_hidden: sequence specifying size of hidden dimensions. The
+    output dimension of the last layer is 1 by default.
+    * dim_y: data dimensionality (default: 2).
+    * init_fn: choice of initialization method for weight matrices (default:
+    `jax.nn.initializers.normal`).
+    * epsilon_init: value of standard deviation of weight initialization method.
+    * sigma_act_fn: choice of activation function used in convex network architecture (default: `nn.softplus`). Must be non decreasing and have Lipschitz derivative.
+    * pos_act_fn: choice of positive activation function (default: `nn.relu`). Must be positive and Lipschitz.
+  """
+
+  dim_hidden: Sequence[int]
+  dim_y: int = 2
+  init_fn: Callable = jax.nn.initializers.normal
+  epsilon_init: float = 1e-2
+  sigma_act_fn: Callable = nn.softplus  # alternative -> ReLU, ELU
+  pos_act_fn: Callable = nn.relu  # alternative -> softplus
+  relax_strict_convexity: bool = False
+
+  @nn.compact
+  def __call__(self, y):
+    """Forward pass.
+
+    Args:
+      y: observation from source distribution.
+        array of shape (B, n_features_y) with B the batch_size.
+
+    Returns:
+      outputs: array of shape (B,)
+    """
+    # encoding the input of convex network (quadratic potential of y)
+    q = PosDefPotentials(
+      self.dim_y,
+      name='q_potential',
+      num_potentials=1,
+      kernel_init=DenseWrapper._identity_initializer,
+      bias_init=nn.initializers.zeros,
+      use_bias=True,
+    )
+
+    # ===== Convex network =====
+    # w_U:  positive dense layers (no bias), weights init -> ones / d1
+    pos_layer = nn.Dense if self.relax_strict_convexity else PositiveDense
+    w_U = partial(
+      DenseWrapper,
+      layer_class=pos_layer,
+      kernel_init_type='constant',
+      use_bias=True,
+    )
+    rescale = PositiveDense.inv_rectifier_fn  # approximately correct for ReLU.
+    kernel_constant_inits_U = [rescale(1.0 / d1) for d1 in [1] + list(self.dim_hidden)]
+    output_dims_U = list(self.dim_hidden) + [1]
+
+    # w_V: dense layers (no bias), weights init -> approx(0)
+    w_V = partial(
+      DenseWrapper,
+      kernel_init_type='normal',
+      kernel_epsilon_init=self.epsilon_init,
+      use_bias=False,
+    )
+    output_dims_V = list(self.dim_hidden) + [1]
+
+    # ===== Inference =====
+    z = q(y).reshape(y.shape[0], -1)
+    num_steps = len(self.dim_hidden) + 1
+    for i in range(num_steps):
+      # convex network
+      w_Uk = w_U(features=output_dims_U[i], name=f'w_U_dense_{i}',
+                 kernel_constant_init=kernel_constant_inits_U[i])
+      w_Vk = w_V(features=output_dims_V[i], name=f'w_V_dense_{i}')
+      h = w_Uk(z) + w_Vk(y)
+      z = self.sigma_act_fn(h)
+    return z.reshape(-1,)
+
+
 class PICNN(nn.Module):
   """Partially input convex neural network (PICNN) architecture with initialization.
   Implementation of partially input convex neural networks as introduced in
@@ -73,9 +153,9 @@ class PICNN(nn.Module):
     * init_fn: choice of initialization method for weight matrices (default:
     `jax.nn.initializers.normal`).
     * epsilon_init: value of standard deviation of weight initialization method.
-    * tau_act_fn: choice of activation function used in context network architecture
-    * sigma_act_fn: choice of activation function used in convex network architecture
-    * pos_act_fn: choice of positive activation function (default: `nn.relu`)
+    * tau_act_fn: choice of activation function used in context network architecture (default: `nn.softplus`). Must be Lipschitz.
+    * sigma_act_fn: choice of activation function used in convex network architecture (default: `nn.softplus`). Must be non decreasing and have Lipschitz derivative.
+    * pos_act_fn: choice of positive activation function (default: `nn.relu`). Must be positive and Lipschitz.
     * context_dense_layer: choice of layer type for the context modules
     (default: nn.Dense, later BjorckDense might be used)
     * gaussian_map: data inputs of source and target measures for
@@ -89,7 +169,7 @@ class PICNN(nn.Module):
   epsilon_init: float = 1e-2
   tau_act_fn: Callable = nn.softplus  # alternative -> GroupSort
   sigma_act_fn: Callable = nn.softplus  # alternative -> ReLU, ELU
-  pos_act_fn: Callable = nn.relu
+  pos_act_fn: Callable = nn.relu  # 
   context_dense_layer: nn.Module = nn.Dense  # TODO: try with BjorckDense
   gaussian_map: Tuple[jnp.ndarray, jnp.ndarray] = None
 
@@ -201,7 +281,7 @@ class PICNN(nn.Module):
       v = f_v(features=output_dims_v[i], name=f'f_v_dense_{i}')(x)
       w = f_w(features=output_dims_w[i], name=f'f_w_dense_{i}')(x)
       # convex network
-      w_Uk = w_U(features=output_dims_U[i], name=f'w_U_pdense_{i}',
+      w_Uk = w_U(features=output_dims_U[i], name=f'w_U_dense_{i}',
                  kernel_constant_init=kernel_constant_inits_U[i])
       w_Vk = w_V(features=output_dims_V[i], name=f'w_V_dense_{i}')
       h = w_Uk(z * self.pos_act_fn(u)) + w_Vk(y * v) + w

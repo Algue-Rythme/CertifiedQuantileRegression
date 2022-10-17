@@ -24,7 +24,7 @@ from matplotlib import axes
 import optax
 from sklearn.datasets import make_moons, make_circles
 
-from cnqr import balanced_KR
+from cnqr.losses import balanced_KR
 from cnqr.layers import StiefelDense, full_sort, groupsort2
 
 
@@ -95,8 +95,8 @@ def apply_model(state, points, labels):
     model_params = {'params': params, 'lip': state.lip_state}
     score, variables = state.apply_fn(model_params, points, train=True, mutable='lip')
     score = score.flatten()  # size (B,)
-    loss, (pred_P, pred_Q) = balanced_KR(labels, score, has_aux=True)
-    return loss, (variables['lip'], pred_P, pred_Q)
+    loss, (fP, fQ) = balanced_KR(labels, score, has_aux=True)
+    return loss, (variables['lip'], fP, fQ)
 
   grad_fn = jax.value_and_grad(balanced_wasserstein, has_aux=True)
   (loss, aux), grads = grad_fn(state.params)
@@ -128,7 +128,7 @@ def train_epoch(state, train_ds, batch_size, rng):
     points = train_ds["points"][perm, ...]
     labels = train_ds["labels"][perm, ...]
     grads, aux, loss = apply_model(state, points, labels)
-    (lip_vars, P, Q) = aux
+    (lip_vars, fP, fQ) = aux
     state = update_model(state, grads, lip_vars)
     epoch_loss.append(loss)
 
