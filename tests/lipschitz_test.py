@@ -20,10 +20,10 @@ from scipy.linalg import norm, eig
 
 import cnqr.layers as layers
 import cnqr.tree_util as tree_util
-from cnqr._src.lipschitz import StiefelDense, power_iteration, spectral_normalization
+from cnqr.layers import StiefelDense, groupsort2
+from cnqr._src.lipschitz import power_iteration, spectral_normalization
 from cnqr._src.lipschitz import l2_normalize, bjorck_projection, projection_stiefel_manifold
 from cnqr._src.lipschitz import implicit_differentiation_stiefel_proj
-from cnqr._src.lipschitz import groupsort2
 
 
 class StiefelDenseTest(jtu.JaxTestCase):

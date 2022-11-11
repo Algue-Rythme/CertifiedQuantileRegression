@@ -433,6 +433,11 @@ class StiefelDense(nn.Module):
     return y
 
 
+##############################################
+############## Activations ###################
+##############################################
+
+
 def channelwise_groupsort2(x):
   """GroupSort2 activation function.
 
