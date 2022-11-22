@@ -17,6 +17,7 @@ import jax.numpy as jnp
 import jax.nn.initializers as initializers
 from jax.tree_util import tree_map
 
+import jaxopt.projection
 from jaxopt.tree_util import tree_zeros_like
 
 import flax
@@ -107,6 +108,7 @@ def spectral_normalization(W,
 
   It computes the leading eigenvector and the leading eigenvalue of :math:`W^T W` to
   obtain the leading singular value of :math:`W`.
+  Note that the left or right multiplication convention is irrelevant here since ||W||_2 = ||W^T||_2.
 
   Based on simplified discussion: https://math.stackexchange.com/questions/1255709/finding-the-largest-singular-value-easily
   
@@ -432,6 +434,122 @@ class StiefelDense(nn.Module):
 
     return y
 
+
+def projection_2_infty_ball(mat, epsilon=1e-9):
+  """Project matrix on unit ball with 2->inf norm using left-multiplication convention (x |-> xM).
+
+  See [1] for details.
+
+  The 2->inf norm is maximum l2 norm of the columns (Proposition 6.1 p20 of [1]):
+    ||A||_{2->inf} = max_{j} ||A_{\cdot,j}||_2
+
+  Per remark 6.2 p20 of [1] for any vector x:
+    ||xA||_{inf} <= ||x||_2 ||A||_{2->inf}
+  However this property is not true in general when x is a matrix.
+
+  A slightly different result actually holds (Proposition 6.5 p21 of [1]):
+    ||BA||_{2->inf} <= ||B||_2        ||A||_{2->inf} 
+    ||AC||_{2->inf} <= ||A||_{2->inf} ||B||_{inf}
+
+  Note that the following inequality holds (Proposition 6.3 p20 of [1]):
+    ||A||_{2->inf}  <= ||A||_2 <= min(sqrt(N) * ||A||_{2->inf}, sqrt(M) * ||A^T||_{2->inf})
+
+  [1] Cape, J., Tang, M. and Priebe, C.E., 2019.
+      The two-to-infinity norm and singular subspace geometry with applications to high-dimensional statistics.
+      The Annals of Statistics, 47(5), pp.2405-2439.
+      https://arxiv.org/pdf/1705.10735.pdf
+  
+  Args:
+    mat: matrix to normalize of shape (M, N) where M denotes input dimension and N output dimension.
+    epsilon: small value to avoid division by zero.
+    
+  Returns:
+    normalized matrix of same shape as mat.
+  """
+  vec_norms = jnp.sqrt(jnp.sum(mat**2, axis=0, keepdims=True))
+  vec_norms = jnp.clip(vec_norms, a_min=epsilon, a_max=None)
+  mat = mat / vec_norms  # unit norm columns.
+  vec_norms = jnp.clip(vec_norms, a_min=None, a_max=1.)
+  return mat * vec_norms  # rescale columns to original norm when their norm is smaller than 1.
+
+
+def projection_vector_l1_ball(vec):
+  return jaxopt.projection.projection_l1_ball(vec, radius=1.)
+
+def projection_matrix_l1_ball(mat):
+  """Project matrix on unit ball with l-inf norm using left-multiplication convention (x |-> xM).
+
+  The infty norm of a matrix is the maximum absolute column sum of the matrix:
+
+    ||A||_{inf} = max_{j} ||A_{\cdot,j}||_1
+
+  Useful inequalities (from wikipedia):
+
+    1/sqrt(M) ||A||_{inf} <= ||A||_2 <= sqrt(N)||A||_{inf}
+  
+  Args:
+    mat: matrix to normalize of shape (M, N) where M denotes input dimension and N output dimension.
+    
+  Returns:
+    normalized matrix of same shape as mat.
+  """
+  return jax.vmap(projection_vector_l1_ball)(mat, in_axes=(1,), out_axes=1)
+
+
+class NormalizedDense(nn.Module):
+  """Dense layer with normalized matrix weights.
+  
+  Attributes:
+    normalize_fun: function to normalize the matrix weights.
+    features: number of output features.
+    use_bias: whether to add a bias to the output (default: True).
+    kernel_init: initializer for the kernel.
+    bias_init: initializer for the bias.
+  """
+  features: int
+  normalize_fun: Callable
+  train: Optional[bool] = None
+  use_bias: bool = True
+  kernel_init: Callable = initializers.lecun_normal()
+  bias_init: Callable = initializers.zeros
+
+  @nn.compact
+  def __call__(self, inputs, train=None):
+    """Forward pass.
+
+    Args:
+      inputs: array of shape (B, f_1) with B the batch_size.
+      train: whether to use perform orthogonalization of re-use the cached kernel.
+
+    Returns:
+      outputs: array of shape (B, features)
+    """
+
+    # init params
+    kernel_shape = (inputs.shape[-1], self.features)
+    kernel = self.param('kernel', self.kernel_init, kernel_shape)
+
+    if self.use_bias:
+      bias = self.param('bias', self.bias_init, (1, self.features))
+
+    normalized_kernel = self.variable('lip', 'normalized_kernel', jnp.zeros, kernel_shape)
+
+    train = nn.merge_param('train', self.train, train)
+    if train:
+      normalized_ker = self.normalize_fun(kernel)
+      normalized_kernel.value = normalized_ker
+    else:
+      normalized_ker = normalized_kernel.value
+
+    y = jnp.matmul(inputs, normalized_ker)
+    if self.use_bias:
+      y = y + bias
+
+    return y
+
+
+Normalized2ToInftyDense = partial(NormalizedDense, normalize_fun=projection_2_infty_ball)
+NormalizedInftyDense = partial(NormalizedDense, normalize_fun=projection_matrix_l1_ball)
 
 ##############################################
 ############## Activations ###################
