@@ -22,10 +22,30 @@ from scipy.linalg import norm, eig
 import cnqr.layers as layers
 import cnqr.tree_util as tree_util
 from cnqr.parametrizations import BjorckParametrization
-from cnqr.layers import StiefelDense, groupsort2
+from cnqr.layers import StiefelDense, RKOConv, NormalizedInftyDense, Normalized2ToInftyDense
+from cnqr.layers import groupsort2, full_sort
 
 
-class BjorckDenseTest(jtu.JaxTestCase):
+"""
+About these tests:
+
+==================
+What is tested:
+---------------
+- layer instantiation
+- prediction
+- k lip_constraint is respected (at +-0.001 or more)
+
+What is not tested:
+-------------------
+- training
+- storing on disk and reloading
+- layer performance (time / accuracy)
+- layer structure (doesn't check that RKOConv is actually a convolution with the right padding)
+"""
+
+
+class StiefelDenseTest(jtu.JaxTestCase):
 
   def test_stiefel_dense_glorot_normal(self):
     """Test Stiefel projection for dense matrices with glorot normal initializer."""
@@ -151,8 +171,8 @@ class BjorckDenseTest(jtu.JaxTestCase):
     rtol = 1e-4
     jtu.check_grads(forward_model, (params, batch), modes=['rev'], order=1, eps=eps, rtol=rtol)
 
-  def test_lipschitz_architecture(self):
-    """Lipschitz Neural Network."""
+  def test_dense_architecture(self):
+    """Test Sequential Dense Neural Network end-to-end."""
     key = jax.random.PRNGKey(822)
     key_params, key_lip, batch_1_key, batch_2_key = jax.random.split(key, 4)
 
@@ -186,13 +206,77 @@ class BjorckDenseTest(jtu.JaxTestCase):
     tree_util.tree_map(lambda a, b: self.assertAllClose(a, b, atol=atol, rtol=rtol), mutated_1['lip'], mutated_2['lip'])
 
 
+class RKOConvTest(jtu.JaxTestCase):
+
+  @parameterized.parameters(((1, 1), (1, 1), 'SAME'),
+                            ((3, 3), (1, 1), 'VALID'),
+                            ((3, 3), (2, 2), 'CIRCULAR'))
+  def test_conv2d(self, kernel_size, strides, padding):
+    """Test RKOConvolution with 2D inputs."""
+    key = jax.random.PRNGKey(231)
+    key_params, key_lip, batch_key = jax.random.split(key, 3)
+
+    batch_size, input_height, input_width, num_channels = 6, 28, 36, 3
+    batch = jax.random.uniform(key=batch_key, shape=(batch_size, input_height, input_width, num_channels),
+                               minval=0., maxval=1.)
+
+    features = 12
+    model = RKOConv(features=features, kernel_size=kernel_size, strides=strides, padding=padding)
+    all_params = model.init(rngs={'params': key_params, 'lip': key_lip}, inputs=batch, train=True)
+
+    params = all_params['params']
+    params_lip = all_params['lip']
+
+    epsilon = 1e-7
+    def forward_model(params, inputs):
+      preds, _ = model.apply({'params': params, 'lip': params_lip}, inputs, train=True, mutable=['lip'])
+      loss = jnp.sqrt(jnp.sum(preds ** 2) + epsilon)  # Norm Preserving loss => Gradient Norm Preserving operation.
+      return loss
+
+    # batch computation of gradients norms wrt to each input.
+    Jxf = jax.vmap(jax.grad(forward_model, argnums=1), in_axes=(None, 0))(params, batch[:, None, ...])
+    Jxf = jnp.reshape(Jxf, (batch_size, -1))
+    Jxf_norm = jnp.linalg.norm(Jxf, axis=1)
+
+    # check that the Lipschitz constant is less than 1 (up to numerical error).
+    atol = 1e-4
+    self.assertLessEqual(jnp.max(Jxf_norm), 1. + atol)
+
+    # Check that the 1x1 convolution is gradient norm preserving.
+    if kernel_size == (1, 1) and strides == (1, 1):
+      self.assertLessEqual(1. - atol, jnp.min(Jxf_norm))
+
+    # check that the gradient is computed correctly.
+    eps = 1e-3
+    rtol = 1e-3
+    jtu.check_grads(forward_model, (params, batch), modes=['rev'], order=1, eps=eps, rtol=rtol)
+
+
 class ActivationsTest(jtu.JaxTestCase):
 
   def test_groupsort2(self):
     """Test GroupSort2."""
-    vec = jnp.array([[1, 4, 5, 8] + [2, 3, 6, 7]])
+    vec = jnp.array([[4, 1, 5, 8, 3, 2, 6, 7]])
     vec_group = groupsort2(vec)
-    answer = jnp.array([[1, 3, 5, 7] + [2, 4, 6, 8]])
+    answer = jnp.array([[1, 4, 5, 8, 2, 3, 6, 7]])
+    onp.testing.assert_array_equal(vec_group, answer)
+
+  def test_groupsort2_batch(self):
+    """Test GroupSort2."""
+    vec = jnp.array([[[4, 1, 5, 8, 3, 2, 6, 7], [10, 20, 30, 50, 40, 60, 70, 80]],
+                     [[8, 7, 6, 5, 4, 3, 2, 1], [ 1,  1,  0,  1,  0,  0,  1,  0]]])
+    vec_group = groupsort2(vec)
+    answer = jnp.array([[[1, 4, 5, 8, 2, 3, 6, 7], [10, 20, 30, 50, 40, 60, 70, 80]],
+                        [[7, 8, 5, 6, 3, 4, 1, 2], [ 1,  1,  0,  1,  0,  0,  0,  1]]])
+    onp.testing.assert_array_equal(vec_group, answer)
+
+  def test_fullsort_batch(self):
+    """Test FullSort."""
+    vec = jnp.array([[[4, 1, 5, 8, 3, 2, 6, 7], [10, 20, 30, 50, 40, 60, 70, 80]],
+                     [[8, 7, 6, 5, 4, 3, 2, 1], [ 1,  1,  0,  1,  0,  0,  1,  0]]])
+    vec_group = full_sort(vec)
+    answer = jnp.array([[[1, 2, 3, 4, 5, 6, 7, 8], [10, 20, 30, 40, 50, 60, 70, 80]],
+                        [[1, 2, 3, 4, 5, 6, 7, 8], [ 0,  0,  0,  0,  1,  1,  1,  1]]])
     onp.testing.assert_array_equal(vec_group, answer)
 
 
