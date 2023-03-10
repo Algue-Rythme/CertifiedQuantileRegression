@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import jax._src.test_util as jtu
 import flax.linen as nn
 
-from cnqr._src.convex import PICNN
+from cnqr.layers import PICNN
 
 
 class PICNNTest(jtu.JaxTestCase):

@@ -15,7 +15,8 @@ from flax import linen as nn
 from jax.nn import initializers
 from jax import random
 
-from ott.core.layers import PosDefPotentials, PositiveDense
+from ott.solvers.nn.layers import PositiveDense, PosDefPotentials
+
 
 Shape = Tuple[int]
 Dtype = Any
