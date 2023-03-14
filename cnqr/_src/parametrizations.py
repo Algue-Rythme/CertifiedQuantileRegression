@@ -1,3 +1,6 @@
+# This file is part of CNQR which is released under the Apache License 2.0.
+# See file LICENSE in the root directory or https://opensource.org/licenses/Apache-2.0 for full license details.
+
 from functools import partial
 from re import T
 from typing import Any, Callable, Iterable, List
@@ -20,7 +23,7 @@ from cnqr.loop import while_loop
 
 EPSILON_NORMALIZATION = 1e-10
 
-BJORCK_PRECISION = "high"
+BJORCK_PRECISION = "medium"
 if BJORCK_PRECISION == "low":
   # Adapted from deel-lip 1.4.0
   TOL_SPECTRAL_DEFAULT = 1e-3
@@ -29,8 +32,15 @@ if BJORCK_PRECISION == "low":
   TOL_BJORCK_DEFAULT = 1e-3 / 256   
   MAXITER_SPECTRAL_DEFAULT = 10
   MAXITER_BJORCK_DEFAULT = 15
+elif BJORCK_PRECISION == "medium":
+  # Useful values found after tests in float32 arithmetic on GPU.
+  TOL_SPECTRAL_DEFAULT = 1e-4
+  TOL_BJORCK_DEFAULT = 1e-5
+  MAXITER_SPECTRAL_DEFAULT = 30
+  MAXITER_BJORCK_DEFAULT = 30
 elif BJORCK_PRECISION == "high":
   # Useful values found after tests in float32 arithmetic on GPU.
+  # Required to orthogonaize badly conditioned matrices.
   TOL_SPECTRAL_DEFAULT = 1e-5
   TOL_BJORCK_DEFAULT = 1e-7
   MAXITER_SPECTRAL_DEFAULT = 100

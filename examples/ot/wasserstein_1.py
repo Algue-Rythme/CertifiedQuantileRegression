@@ -25,7 +25,7 @@ import numpy as onp
 import optax
 from sklearn.datasets import make_moons, make_circles
 
-from cnqr import balanced_KR
+from cnqr.losses import balanced_KR
 from cnqr.layers import StiefelDense, Normalized2ToInftyDense, fullsort, groupsort2
 
 
@@ -93,7 +93,7 @@ def apply_model(state, points, labels):
     model_params = {'params': params, 'lip': state.lip_state}
     score, variables = state.apply_fn(model_params, points, train=True, mutable='lip')
     score = score.flatten()  # size (B,)
-    loss, (pred_P, pred_Q) = balanced_KR(labels, score, has_aux=True)
+    loss, (pred_P, pred_Q) = balanced_KR(score, labels, has_aux=True)
     return loss, (variables['lip'], pred_P, pred_Q)
 
   grad_fn = jax.value_and_grad(balanced_wasserstein, has_aux=True)

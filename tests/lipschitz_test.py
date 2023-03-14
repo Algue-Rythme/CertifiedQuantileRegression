@@ -23,7 +23,7 @@ import cnqr.layers as layers
 import cnqr.tree_util as tree_util
 from cnqr.parametrizations import BjorckParametrization
 from cnqr.layers import StiefelDense, RKOConv, NormalizedInftyDense, Normalized2ToInftyDense
-from cnqr.layers import groupsort2, full_sort
+from cnqr.layers import groupsort2, fullsort, l2norm_pool, global_l2norm_pool
 
 
 """
@@ -209,8 +209,8 @@ class StiefelDenseTest(jtu.JaxTestCase):
 class RKOConvTest(jtu.JaxTestCase):
 
   @parameterized.parameters(((1, 1), (1, 1), 'SAME'),
-                            ((3, 3), (1, 1), 'VALID'),
-                            ((3, 3), (2, 2), 'CIRCULAR'))
+                            ((3, 3),   None, 'VALID'),
+                            ((3, 3),      2, 'CIRCULAR'))
   def test_conv2d(self, kernel_size, strides, padding):
     """Test RKOConvolution with 2D inputs."""
     key = jax.random.PRNGKey(231)
@@ -247,9 +247,52 @@ class RKOConvTest(jtu.JaxTestCase):
       self.assertLessEqual(1. - atol, jnp.min(Jxf_norm))
 
     # check that the gradient is computed correctly.
-    eps = 1e-3
-    rtol = 1e-3
+    eps = 1e-2
+    rtol = 1e-2
     jtu.check_grads(forward_model, (params, batch), modes=['rev'], order=1, eps=eps, rtol=rtol)
+
+
+class PoolingTest(jtu.JaxTestCase):
+
+  def test_l2norm_pool(self):
+    """Test L2NormPooling."""
+    x = jnp.arange(1, 10).reshape((1, 3, 3, 1)).astype(jnp.float32)
+    pool = lambda x: l2norm_pool(x, window_shape=(2, 2), strides=(1, 1), padding='VALID')
+    pool_local = lambda *xs: sum([x**2 for x in xs]) ** 0.5 
+    expected_y = jnp.array([
+        [pool_local(1, 2, 4, 5), pool_local(2, 3, 5, 6)],
+        [pool_local(4, 5, 7, 8), pool_local(5, 6, 8, 9)],
+    ]).reshape((1, 2, 2, 1))
+    y = pool(x)
+    atol = 1e-4
+    rtol = 1e-4
+    self.assertAllClose(y, expected_y, atol=atol, rtol=rtol)
+    
+  def test_l2norm_pool_gnp(self):
+    """Test that L2NormPooling is gradient norm preserving."""
+    x = jnp.arange(1, 10).reshape((1, 3, 3, 1)).astype(jnp.float32)
+    pool = lambda x: l2norm_pool(x, window_shape=(2, 2), strides=None, padding='VALID')
+    y = pool(x)
+    atol = 1e-4
+    rtol = 1e-4
+    cotangeant = jnp.ones_like(y)
+    y_grad = jax.vjp(pool, x)[1](cotangeant)
+    cotangeant_norm = jnp.linalg.norm(cotangeant)
+    y_grad_norm = jnp.linalg.norm(y_grad)
+    # self.assertAllClose(y_grad, expected_grad, atol=atol, rtol=rtol)
+    # test that pooling is Gradient Norm Preserving
+    self.assertAllClose(y_grad_norm, cotangeant_norm, atol=atol, rtol=rtol)
+
+  def test_global_l2norm_pool(self):
+    """Test the Global L2 norm Pooling."""
+    x = jnp.arange(1, 10).reshape((1, 3, 3, 1)).astype(jnp.float32)
+    pool = lambda x: global_l2norm_pool(x)
+    pool_local = lambda *xs: sum([x**2 for x in xs]) ** 0.5 
+    expected_y = jnp.array([pool_local(1, 2, 3, 4, 5, 6, 7, 8, 9)]).reshape((1, 1))
+    y = pool(x)
+    atol = 1e-4
+    rtol = 1e-4
+    self.assertAllClose(y, expected_y, atol=atol, rtol=rtol)
 
 
 class ActivationsTest(jtu.JaxTestCase):
@@ -274,7 +317,7 @@ class ActivationsTest(jtu.JaxTestCase):
     """Test FullSort."""
     vec = jnp.array([[[4, 1, 5, 8, 3, 2, 6, 7], [10, 20, 30, 50, 40, 60, 70, 80]],
                      [[8, 7, 6, 5, 4, 3, 2, 1], [ 1,  1,  0,  1,  0,  0,  1,  0]]])
-    vec_group = full_sort(vec)
+    vec_group = fullsort(vec)
     answer = jnp.array([[[1, 2, 3, 4, 5, 6, 7, 8], [10, 20, 30, 40, 50, 60, 70, 80]],
                         [[1, 2, 3, 4, 5, 6, 7, 8], [ 0,  0,  0,  0,  1,  1,  1,  1]]])
     onp.testing.assert_array_equal(vec_group, answer)
@@ -283,4 +326,10 @@ class ActivationsTest(jtu.JaxTestCase):
 if __name__ == '__main__':
   jax.config.update("jax_debug_nans", True)
   jax.config.update("jax_enable_x64", False)
+
+  # This is needed to avoid a bug in matplotlib when running on a headless server.
+  # TODO: check if this could be removed in the future (or check sanity of my install).
+  import matplotlib.pyplot as plt
+  plt.switch_backend('agg')
+
   absltest.main()

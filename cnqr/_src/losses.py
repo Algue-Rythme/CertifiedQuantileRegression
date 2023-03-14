@@ -3,13 +3,20 @@
 
 """Losses.
 
-Set of useful losses.
+Design notes:
+- Loss functions expect labels and predictions as arguments.
+- The batch_size dimension is assumed to be the first dimension.
+
+TODO: decide once for all if the loss function should perform the reduction or not.
 """
 
+import jax
+import jax.nn as nn
 import jax.numpy as jnp
+import jaxopt
 
 
-def balanced_KR(labels, preds, has_aux=False, eps=1e-2):
+def balanced_KR(preds, labels, has_aux=False, eps=1e-2):
   """Balanced Kantorovich-Rubinstein (KR) loss.
 
   The loss is balanced in the sense that it is invariant to the
@@ -23,8 +30,8 @@ def balanced_KR(labels, preds, has_aux=False, eps=1e-2):
   and mild class imbalance.  
   
   Args:
-    labels: array of shape (batch_size,). Each entry must be either 1 (resp. -1) for P (resp. Q).
     preds: array of shape (batch_size,).
+    labels: array of shape (batch_size,). Each entry must be either 1 (resp. -1) for P (resp. Q).
     has_aux: whether to return auxiliary values.
     eps: small constant to avoid division by zero.
 
@@ -41,3 +48,28 @@ def balanced_KR(labels, preds, has_aux=False, eps=1e-2):
   if has_aux:
     return loss, (pred_P, pred_Q)
   return loss
+
+
+def multiclass_hinge(preds, labels, margin):
+  """Multiclass hinge loss.
+
+  Args:
+    preds: array of shape (batch_size, num_classes).
+    labels: array of shape (batch_size, num_classes), one_hot encoding of labels.
+    margin: float, margin for the hinge loss.
+
+  Returns:
+    loss: tensor of shape (batch_size,). Each entry is the hinge loss for one example.
+  """
+  pos = jnp.sum(labels * preds, axis=-1)  # size (B,)
+
+  # remove the positive score from the predictions.
+  preds_masked_pos = jnp.where(labels > 0., -jnp.inf, preds)
+
+  # retrieve highest score among the negative classes.
+  neg = jnp.max(preds_masked_pos, axis=-1)  # size (B,)
+
+  # compute hinge loss.
+  elementwise = nn.relu(margin - (pos - neg))
+
+  return elementwise

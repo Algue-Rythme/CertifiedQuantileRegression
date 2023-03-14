@@ -1,3 +1,7 @@
+# This file is part of CNQR which is released under the Apache License 2.0.
+# See file LICENSE in the root directory or https://opensource.org/licenses/Apache-2.0 for full license details.
+
+
 from functools import partial
 
 from absl.testing import parameterized
@@ -33,8 +37,8 @@ class BjorckTest(jtu.JaxTestCase):
 
     sigma_scipy = norm(kernel, ord=2)
 
-    atol = 1e-4
-    rtol = 1e-4
+    atol = 1e-2
+    rtol = 1e-3
     self.assertAllClose(norm(u, ord=2), 1., atol=atol, rtol=rtol)
     self.assertAllClose(norm(v, ord=2), sigma, atol=atol, rtol=rtol)
     self.assertAllClose(sigma, sigma_scipy, atol=atol, rtol=rtol)

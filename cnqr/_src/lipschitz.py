@@ -20,9 +20,11 @@ from jax import ShapedArray
 
 import flax
 import flax.linen as nn
-from flax.linen.dtypes import promote_dtype
 from flax.linen.linear import canonicalize_padding
-from flax.linen.linear import _conv_dimension_numbers, _canonicalize_tuple, _normalize_axes
+from flax.linen.linear import _conv_dimension_numbers
+from flax.linen.pooling import pool
+
+import numpy as onp
 
 from cnqr._src.parametrizations import CachedParametrization
 from cnqr.parametrizations import BjorckParametrization
@@ -194,7 +196,7 @@ class RKOConv(nn.Module):
       'CAUSAL' padding for a 1D convolution will left-pad the convolution axis, resulting in same-sized output.
     use_bias: whether to add a bias to the output (default: True).
     rko_method: method to orthogonalize the kernel. Default is BjorckParametrization.
-    lipschitz_condition: whether to rescale the kernel to ensure a Lipschitz constant of 1 (default: True).
+    force_1lip: whether to rescale the kernel to ensure a Lipschitz constant of 1 (default: True).
     kernel_init: initializer for the convolutional kernel. Default is orthogonal initialization, using RKO wrapper.
     bias_init: initializer for the bias.
   """
@@ -205,11 +207,29 @@ class RKOConv(nn.Module):
   kernel_dilation: Union[None, int, Sequence[int]] = 1
   use_bias: bool = True
   rko_method: CachedParametrization = BjorckParametrization
-  lipschitz_condition: bool = True
+  force_1lip: bool = True
   kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = RKO_initializer(initializers.orthogonal())
   bias_init: Callable[[PRNGKey, Shape, Dtype], Array] = initializers.zeros
   conv_general_dilated: ConvGeneralDilatedT = lax.conv_general_dilated
 
+  def _get_conv_shapes(self):
+    if isinstance(self.kernel_size, int):
+      raise TypeError(f'Expected Conv kernel_size to be a tuple/list of integers (eg.: [3, 3]) but got {self.kernel_size}.')
+
+    kernel_size = tuple(self.kernel_size)
+
+    def maybe_broadcast(x: Optional[Union[int, Sequence[int]]]) -> (Tuple[int, ...]):
+      if x is None:
+        x = 1
+      if isinstance(x, int):
+        return (x,) * len(self.kernel_size)
+      return tuple(x)
+
+    # self.strides or (1,) * (inputs.ndim - 2)
+    strides = maybe_broadcast(self.strides)
+    kernel_dilation = maybe_broadcast(self.kernel_dilation)
+
+    return kernel_size, strides, kernel_dilation
 
   def _lipschitz_factor(self, inputs_shape: Shape) -> float:
     """Compute the Lipschitz factor to apply on estimated Lipschitz constant in
@@ -217,7 +237,7 @@ class RKOConv(nn.Module):
     input shape.
 
     Warning: code has only been tested for images in input, i.e for Conv2D setting.
-    No guarantee that it works for other settings.
+    No guarantees that it works in other settings.
 
     Copied from deel/lip/layers/convolutional.py version 1.4.0.
     See appendix of [1] for details.
@@ -226,21 +246,23 @@ class RKOConv(nn.Module):
       « Achieving robustness in classification using optimal transport with hinge regularization ».
       arXiv. https://doi.org/10.48550/arXiv.2006.06520.
     """
-    strides = jnp.array(self.strides, dtype=jnp.float32)
-    prod_strides = jnp.prod(strides)
-    k_spatial = jnp.array(self.kernel_size, dtype=jnp.float32)
+    kernel_size, strides, _ = self._get_conv_shapes()
+
+    strides = onp.array(strides, dtype=jnp.float32)
+    prod_strides = onp.prod(strides)
+    k_spatial = onp.array(kernel_size, dtype=jnp.float32)
     k_spatial_div2 = (k_spatial - 1.) / 2.
-    input_spatial = jnp.array(inputs_shape[len(k_spatial)-1:-1], dtype=jnp.float32)  # remove batch and channel dims.
+    input_spatial = onp.array(inputs_shape[-len(k_spatial)-1:-1], dtype=jnp.float32)  # remove batch and channel dims.
 
     # vectorized implementation of the formula given in deel/lip/layers/convolutional.py
     if prod_strides == 1:
-      num = jnp.prod(input_spatial)
-      den = jnp.prod(k_spatial * input_spatial - k_spatial_div2 * (k_spatial_div2 + 1))
+      num = onp.prod(input_spatial)
+      den = onp.prod(k_spatial * input_spatial - k_spatial_div2 * (k_spatial_div2 + 1))
     else:
       num = 1.
-      den = jnp.prod(jnp.ceil(k_spatial / strides))
+      den = onp.prod(onp.ceil(k_spatial / strides))
 
-    factor = jnp.sqrt(num / den)
+    factor = onp.sqrt(num / den)
 
     return factor
 
@@ -282,21 +304,7 @@ class RKOConv(nn.Module):
     # - input_dilation is not supported
     # - arbitrary precision is not supported
     # - feature_group_count is not supported
-    if isinstance(self.kernel_size, int):
-      raise TypeError(f'Expected Conv kernel_size to be a tuple/list of integers (eg.: [3, 3]) but got {self.kernel_size}.')
-
-    kernel_size = tuple(self.kernel_size)
-
-    def maybe_broadcast(x: Optional[Union[int, Sequence[int]]]) -> (Tuple[int, ...]):
-      if x is None:
-        x = 1
-      if isinstance(x, int):
-        return (x,) * len(kernel_size)
-      return tuple(x)
-
-    # self.strides or (1,) * (inputs.ndim - 2)
-    strides = maybe_broadcast(self.strides)
-    kernel_dilation = maybe_broadcast(self.kernel_dilation)
+    kernel_size, strides, kernel_dilation = self._get_conv_shapes()
 
     # pad input.
     padding_lax = canonicalize_padding(self.padding, len(kernel_size))
@@ -322,7 +330,7 @@ class RKOConv(nn.Module):
     kernel_shape = kernel_size + (in_features, self.features)
     kernel = self.param('kernel', self.kernel_init, kernel_shape)
     rko_kernel = self._reshaped_kernel_orthogonalization(kernel, train=train)
-    if self.lipschitz_condition:
+    if self.force_1lip:
       rko_kernel = rko_kernel * self._lipschitz_factor(inputs.shape)
 
     y = self.conv_general_dilated(
@@ -343,6 +351,62 @@ class RKOConv(nn.Module):
       y = y + bias
 
     return y
+
+
+##########################################
+############## Pooling ###################
+##########################################
+
+
+def l2norm_pool(inputs, window_shape, strides=None, padding="VALID"):
+  """L2-norm pooling.
+
+  Observe that this activation is Gradient Norm Preserving (GNP) 
+  if strides == window_shape. This is the default behavior when 
+  strides is None.
+
+  Note: this function is not differentiable at 0. Beware of numerical errors.
+
+  Args:
+    inputs: input data with dimensions (batch, window dims..., features).
+    window_shape: a shape tuple defining the window to reduce over.
+    strides: a sequence of `n` integers, representing the inter-window
+      strides (default: `window_shape`).
+    padding: either the string `'SAME'`, the string `'VALID'`, or a sequence
+      of `n` `(low, high)` integer pairs that give the padding to apply before
+      and after each spatial dimension (default: `'VALID'`).
+    count_include_pad: a boolean whether to include padded tokens
+      in the average calculation (default: `True`).
+
+  Returns:
+      array of shape (..., C) with l2norm pooling applied.
+  """
+  if strides is None:
+    strides = window_shape
+  epsilon = 1e-6  # like in deel-lip.
+  y = jnp.square(inputs)
+  y = pool(y, 0., lax.add, window_shape, strides, padding)
+  # avoid issues in derivative of sqrt when y=0.
+  y = jnp.sqrt(y + epsilon)  
+  return y
+
+
+def global_l2norm_pool(inputs):
+  """Global L2-norm pooling.
+
+  Observe that a single batch dimension is supported.
+
+  Note: this function is not differentiable at 0. Beware of numerical errors.
+
+  Args:
+    inputs: input data with dimensions (batch, window dims..., features).
+
+  Returns:
+      array of shape (..., C) with global l2norm pooling applied.
+  """
+  y = l2norm_pool(inputs, inputs.shape[1:-1], strides=inputs.shape[1:-1], padding="VALID")
+  y = jnp.reshape(y, (inputs.shape[0], -1))  # flatten spatial dimensions.
+  return y
 
 
 ##############################################
@@ -373,7 +437,7 @@ def groupsort2(x):
   return jnp.reshape(flat_x, x.shape)
 
 
-def full_sort(x):
+def fullsort(x):
   """Full Sort activation function along the last axis.
 
   Args:
