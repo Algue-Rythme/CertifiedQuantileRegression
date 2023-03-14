@@ -1,3 +1,6 @@
+# This file is part of CNQR which is released under the Apache License 2.0.
+# See file LICENSE in the root directory or https://opensource.org/licenses/Apache-2.0 for full license details.
+
 from functools import partial
 from re import T
 from typing import Any, Callable, Iterable, List
@@ -20,19 +23,30 @@ from cnqr.loop import while_loop
 
 EPSILON_NORMALIZATION = 1e-10
 
-_DEEL_LIP_DEFAULT = False
-if _DEEL_LIP_DEFAULT:
-  # Taken from deel-lip 1.4.0
+BJORCK_PRECISION = "medium"
+if BJORCK_PRECISION == "low":
+  # Adapted from deel-lip 1.4.0
   TOL_SPECTRAL_DEFAULT = 1e-3
-  TOL_BJORCK_DEFAULT = 1e-3
+  # in deel-lip it's ATOL=1e-3, while here it's RTOL=1e-5 wrt matrix length.
+  # This covers the case len(M) ~= 256 frequently encountered in modern architectures.
+  TOL_BJORCK_DEFAULT = 1e-3 / 256   
   MAXITER_SPECTRAL_DEFAULT = 10
   MAXITER_BJORCK_DEFAULT = 15
-else:
+elif BJORCK_PRECISION == "medium":
   # Useful values found after tests in float32 arithmetic on GPU.
+  TOL_SPECTRAL_DEFAULT = 1e-4
+  TOL_BJORCK_DEFAULT = 1e-5
+  MAXITER_SPECTRAL_DEFAULT = 30
+  MAXITER_BJORCK_DEFAULT = 30
+elif BJORCK_PRECISION == "high":
+  # Useful values found after tests in float32 arithmetic on GPU.
+  # Required to orthogonaize badly conditioned matrices.
   TOL_SPECTRAL_DEFAULT = 1e-5
   TOL_BJORCK_DEFAULT = 1e-7
   MAXITER_SPECTRAL_DEFAULT = 100
   MAXITER_BJORCK_DEFAULT = 100
+else:
+  raise ValueError(f"Unknown BJORCK_PRECISION={BJORCK_PRECISION}")
 
 # According to benchmarks, implicit differentiation is faster 
 # than unrolling when the size of the matrix exceeds 1000.
@@ -42,16 +56,16 @@ IMPLICIT_OVER_UNROLL = 1000
 class CachedParametrization(nn.Module):
   """Base class for cached parametrizations.
   
-  The kind of parametrization is designed to be used in forward pass
+  This kind of parametrization is designed to be used in forward pass
   of neural networks. The parametrization is cached during the forward pass
   when training=True and re-used during the forward pass when training=False.
 
   The cached results are stored in the state of the module using Flax variables.
   They are not part of the parameters of the module and are not updated by the optimizer.
 
-  The parametrization is stateful so it inherits from nn.Module, may require a key for RNGs.
-  Note that "light" re-parametrizations that do not require memoization should be implemented
-  as a simple function.
+  The parametrization is stateful so it inherits from nn.Module, it may requires a key for RNGs.
+  Note that "lights" re-parametrizations that do not require memoization should be implemented
+  as a simple functions.
 
   Warning: when training=False, the cached results are used and not recomputed. In particular backpropagation
   to unconstrained parameters is not possible. Moreover, the cached parameters "lag" behind the unconstrained ones
@@ -126,7 +140,7 @@ def power_iteration(W,
     u, _ = t
     v = l2_normalize(jnp.matmul(W, u))
     next_u = l2_normalize(jnp.matmul(v, W))
-    error = jnp.linalg.norm(u - next_u)
+    error = jnp.linalg.norm(u - next_u)  # absolute error.
     # We use stop_gradient to ensure that error is independent of u.
     # Otherwise the JVP rule of scan yields NaNs.  
     # This is a weird bug that must be investigated.
@@ -230,7 +244,7 @@ def bjorck_projection(W,
     I = jnp.eye(len(approx_I))  # shape (B, B)
     res = approx_I - I
     error = jnp.sum(res**2) ** 0.5
-    return error >= tol * len(approx_I)
+    return error >= tol * len(approx_I)  # relative error.
   
   def body_fun(state):
     theta, _ = state
@@ -551,7 +565,6 @@ class NormalizationParametrization(CachedParametrization):
     Returns:
       outputs: array of shape (B, features)
     """
-
     # init params
     kernel_shape = kernel.shape
 
