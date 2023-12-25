@@ -2,6 +2,7 @@
 # See file LICENSE in the root directory or https://opensource.org/licenses/Apache-2.0 for full license details.
 
 from cnqr._src.convex import PICNN
+from cnqr._src.convex import PositiveDense
 from cnqr._src.lipschitz import Normalized2ToInftyDense
 from cnqr._src.lipschitz import NormalizedInftyDense
 from cnqr._src.lipschitz import StiefelDense

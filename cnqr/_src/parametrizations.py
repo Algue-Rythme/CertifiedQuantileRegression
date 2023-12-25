@@ -82,6 +82,7 @@ class CachedParametrization(nn.Module):
       If 'identity', the parametrization is treated as an identity.
       If 'auto', the differentiation policy is automatically selected based on the results of a benchmark.
       Not all parametrizations support all differentiation policies. Check the documentation of the parametrization.
+    groupname: str, name of the group of parameters to which the parametrization is applied.
   """
   pass
 
@@ -407,6 +408,7 @@ class BjorckParametrization(CachedParametrization):
   """
   train: Optional[bool] = None
   auto_diff: str = 'auto'
+  groupname: str = 'lip'
   u_init: Callable = jax.random.normal
   tol_spectral: float = TOL_SPECTRAL_DEFAULT
   tol_bjorck: float = TOL_BJORCK_DEFAULT
@@ -462,10 +464,10 @@ class BjorckParametrization(CachedParametrization):
     kernel_shape = kernel.shape
 
     # init mutable variables
-    orthogonal_kernel = self.variable('lip', 'orthogonal_kernel', jnp.zeros, kernel_shape)
-    u = self.variable('lip', 'u',
-      (lambda shape: l2_normalize(self.u_init(self.make_rng('lip'), shape))), (kernel_shape[-1],))
-    sigma = self.variable('lip', 'sigma', lambda shape: jnp.zeros(shape), ())
+    orthogonal_kernel = self.variable(self.groupname, 'orthogonal_kernel', jnp.zeros, kernel_shape)
+    u = self.variable(self.groupname, 'u',
+      (lambda shape: l2_normalize(self.u_init(self.make_rng(self.groupname), shape))), (kernel_shape[-1],))
+    sigma = self.variable(self.groupname, 'sigma', lambda shape: jnp.zeros(shape), ())
 
     train = nn.merge_param('train', self.train, train)
     if train:
@@ -542,7 +544,7 @@ def projection_matrix_l1_ball(mat):
 
 
 class NormalizationParametrization(CachedParametrization):
-  """Dense layer with normalized matrix weights.
+  """Normalized matrix weights for well chosen norm.
   
   Attributes:
     normalize_fun: function to normalize the matrix weights.
@@ -552,6 +554,7 @@ class NormalizationParametrization(CachedParametrization):
   """
   normalize_fun: Callable
   train: Optional[bool] = None
+  groupname: str = 'lip'
   auto_diff: str = 'auto'
 
   @nn.compact
@@ -568,7 +571,7 @@ class NormalizationParametrization(CachedParametrization):
     # init params
     kernel_shape = kernel.shape
 
-    normalized_kernel = self.variable('lip', 'normalized_kernel', jnp.zeros, kernel_shape)
+    normalized_kernel = self.variable(self.groupname, 'normalized_kernel', jnp.zeros, kernel_shape)
 
     train = nn.merge_param('train', self.train, train)
     if train:
@@ -582,3 +585,60 @@ class NormalizationParametrization(CachedParametrization):
 
 Normalized2ToInftyParametrization = partial(NormalizationParametrization, normalize_fun=projection_2_infty_ball)
 NormalizedInftyParametrization = partial(NormalizationParametrization, normalize_fun=projection_matrix_l1_ball)
+
+
+class PositiveOrthant(CachedParametrization):
+  """Tensor with positive weights (> 0).
+  
+  Attributes:
+    beta: positive scalar to scale the weights.
+    train: whether to use perform orthogonalization or re-use the cached kernel.
+    auto_diff: support 'auto' (default), 'unroll' and 'identity' modes.
+      See documentation of CachedParametrization for more details.
+  """
+  beta = 1.
+  train: Optional[bool] = None
+  groupname: str = 'convex'
+  auto_diff: str = 'auto'
+
+  def inv_act_fun(self, tensor):
+    return (1. / self.beta) * jnp.log(jnp.exp(tensor * self.beta) - 1.)
+
+  def act_fun(self, tensor):
+    return (1. / self.beta) * nn.softplus(tensor * self.beta)
+
+  @nn.compact
+  def __call__(self, tensor, train=None):
+    """Forward pass.
+
+    Args:
+      tensor: array of arbitrary shape.
+      train: whether to use perform orthogonalization or re-use the cached kernel.
+
+    Returns:
+      outputs: array of shape (B, features)
+    """
+    # init params
+    tensor_shape = tensor.shape
+
+    # init mutable variables
+    positive_tensor = self.variable(self.groupname, 'positive_tensor', jnp.zeros, tensor_shape)
+
+    train = nn.merge_param('train', self.train, train)
+    if train:
+
+      auto_diff = self.auto_diff
+      if self.auto_diff == 'auto':
+        auto_diff = 'unroll'
+
+      act_fun = self.act_fun
+      if auto_diff == 'identity':
+        act_fun = straight_through(act_fun)
+
+      positive_ker = act_fun(tensor)
+      positive_tensor.value = positive_ker
+      
+    else:
+      positive_ker = positive_tensor.value
+
+    return positive_ker

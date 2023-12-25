@@ -5,9 +5,10 @@
 with (slightly modified) initialization schemes proposed in Bunne+(2022).
 
 Largely inspired by ott-jax package: https://github.com/ott-jax/ott distributed under Apache license.
- """
+"""
+from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Sequence, Tuple
+from typing import Any, Callable, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -15,7 +16,10 @@ from flax import linen as nn
 from jax.nn import initializers
 from jax import random
 
-from ott.solvers.nn.layers import PositiveDense, PosDefPotentials
+from ott.solvers.nn.layers import PosDefPotentials
+
+from cnqr._src.parametrizations import CachedParametrization
+from cnqr.parametrizations import PositiveOrthant 
 
 
 Shape = Tuple[int]
@@ -23,6 +27,71 @@ Dtype = Any
 Array = Any
 KeyArray = random.KeyArray
 DTypeLikeInexact = Any  # DTypeLikeFloat | DTypeLikeComplex
+
+
+def inv_act_fun_initializer(input_dims, inv_act_fun):
+  """Initializer for the inverse softplus function.
+
+  Return a function with signature `init(key, shape, dtype=jnp.float_) -> Array`
+
+  Args:
+    input_dims: (integer) size of input dimension.
+    inv_act_fun: inverse of the activation function.
+  """
+  constant = inv_act_fun(1.0 / input_dims)
+  constant_init = initializers.constant(constant)
+  return constant_init
+
+
+@dataclass
+class PositiveDense(nn.Module):
+  """Dense layer with normalized matrix weights.
+  
+  Attributes:
+    normalize_fun: function to normalize the matrix weights.
+    features: number of output features.
+    use_bias: whether to add a bias to the output (default: True).
+    kernel_init: initializer for the kernel.
+    bias_init: initializer for the bias.
+  """
+  features: int
+  use_bias: bool = True
+  kernel_init: Union[Callable, str] = initializers.lecun_normal()
+  bias_init: Callable = initializers.zeros
+  positive_parametrization: CachedParametrization = PositiveOrthant
+
+  @nn.compact
+  def __call__(self, inputs: Array, train: bool = None) -> Array:
+    """Forward pass.
+
+    Args:
+      inputs: array of shape (B, f_1) with B the batch_size.
+      train: whether to use perform orthogonalization of re-use the cached kernel.
+
+    Returns:
+      outputs: array of shape (B, features)
+    """
+    positive_param = self.positive_parametrization()
+
+    input_dims = inputs.shape[-1]
+    kernel_init = self.kernel_init
+    if isinstance(kernel_init, str) and kernel_init == 'inv_act_fun':
+      kernel_init = inv_act_fun_initializer(input_dims, positive_param.inv_act_fun)
+
+    # init params
+    kernel_shape = (input_dims, self.features)
+    kernel = self.param('kernel', kernel_init, kernel_shape)
+
+    positive_kernel = positive_param(kernel, train=train)
+
+    y = jnp.matmul(inputs, positive_kernel)
+    if self.use_bias:
+      bias = self.param('bias', self.bias_init, (self.features,))
+      bias = jnp.reshape(bias, (1, self.features))
+      y = y + bias
+
+    return y
+
 
 class DenseWrapper(nn.Module):
   features: int
